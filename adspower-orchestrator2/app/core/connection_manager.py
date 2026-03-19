@@ -39,7 +39,7 @@ class ConnectionManager:
         if computer_id not in self.connection_times:
             self.connection_times[computer_id] = datetime.now(timezone.utc)
 
-        logger.info(f"✅ Agente conectado: computer_id={computer_id}")
+        logger.info(f"Agente conectado: computer_id={computer_id}")
         asyncio.create_task(self._update_computer_status(computer_id, "online"))
 
         await self.broadcast_to_admins({

@@ -51,6 +51,13 @@ async def check_and_rotate_proxy(
 
 @router.post("/check-and-rotate-all")
 async def check_and_rotate_all():
+    from app.core.connection_manager import connection_manager
+    online_agents = connection_manager.get_online_agents()
+    if not online_agents:
+        raise HTTPException(
+            status_code=503,
+            detail="No hay agentes online. Conecta al menos un agente antes de rotar proxies."
+        )
     asyncio.create_task(_background_check_all())
     return {"message": "Verificación iniciada en background", "status": "processing"}
 
@@ -138,13 +145,26 @@ async def _background_check_all():
                 reason = "offline" if latency is None else f"latencia {latency}ms"
                 logger.warning(f"Proxy {proxy.id} necesita rotación: {reason}")
 
-                import secrets
-                session_id  = secrets.token_urlsafe(16)
-                city        = (proxy.city or "guayaquil").lower().replace(" ", "-")
                 old_session = proxy.session_id or "—"
-                new_user    = (
-                    f"{settings.SOAX_USERNAME}-country-ec-"
-                    f"city-{city}-sessionid-{session_id}"
+
+                # ← Usar ciudades dinámicas de SOAX con fallback automático
+                from app.utils.soax_cities_manager import get_soax_username_with_dynamic_city
+                soax_result = await get_soax_username_with_dynamic_city(
+                    base_username=settings.SOAX_USERNAME,
+                    country=(proxy.country or "ec").lower(),
+                    preferred_city=(proxy.city or "").lower() or None,
+                    exclude_cities=[proxy.city.lower()] if proxy.city else [],
+                    session_lifetime=3600
+                )
+                new_user = soax_result["username"]
+                city = soax_result.get(
+                    "selected_city") or proxy.city or "unknown"
+                session_id = soax_result.get("username", "").split(
+                    "sessionid-")[-1].split("-")[0] or secrets.token_urlsafe(8)  # ← AGREGAR
+
+                logger.info(
+                    f"🔄 Proxy {proxy.id} rotando a ciudad: {city} "
+                    f"(fallback: {soax_result.get('fallback_used', False)})"
                 )
 
                 from app.models.profile import Profile
