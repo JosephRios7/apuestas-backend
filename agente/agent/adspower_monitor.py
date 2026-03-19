@@ -173,6 +173,12 @@ class AdsPowerMonitor:
             return {"is_running": False, "error": "API no disponible"}
 
     def open_browser(self, profile_id: str, url: Optional[str] = None) -> Dict:
+        # Verificar que AdsPower esté corriendo antes de intentar
+        if not self.ping_api():
+            error_msg = "AdsPower no está disponible — verifica que la aplicación esté abierta"
+            logger.error(f"❌ {error_msg}")
+            return {"success": False, "error": error_msg}
+
         try:
             params = {"user_id": profile_id, "open_tabs": 1, "ip_tab": 0}
             if url:
@@ -194,10 +200,18 @@ class AdsPowerMonitor:
                     "debug_port": browser_data.get("debug_port"),
                     "webdriver": browser_data.get("webdriver")
                 }
-            return {"success": False, "error": data.get("msg", "Error desconocido")}
+
+            error_msg = data.get("msg", "Error desconocido")
+            logger.error(f"❌ AdsPower rechazó abrir el navegador: {error_msg}")
+            return {"success": False, "error": error_msg}
+
+        except httpx.ConnectError:
+            return {"success": False, "error": "AdsPower no responde — aplicación cerrada o bloqueada"}
+        except httpx.TimeoutException:
+            return {"success": False, "error": "Timeout abriendo navegador — AdsPower tardó más de 30s"}
         except Exception as e:
             return {"success": False, "error": str(e)}
-
+        
     def close_browser(self, profile_id: str) -> bool:
         try:
             response = self._client.get(

@@ -120,7 +120,18 @@ async def agent_websocket(websocket: WebSocket, computer_id: int, db: AsyncSessi
                             sess.error_detail = data.get("crash_reason")
 
                         await db.commit()
-
+                        
+                        await connection_manager.broadcast_to_admins({
+                            "type":             "session_closed",
+                            "session_id":       session_id,
+                            "computer_id":      computer_id,
+                            "profile_id":       sess.profile_id,
+                            "duration_seconds": sess.duration_seconds,
+                            "total_data_mb":    sess.total_data_mb,
+                            "agent_name":       "agent",
+                            "timestamp":        datetime.utcnow().isoformat(),
+                        })
+                        
                         # ← AGREGAR: si el perfil tuvo sesión real, marcar cookies como OK
                         if sess.profile_id and sess.pages_visited and sess.pages_visited > 0:
                             from app.models.profile import Profile

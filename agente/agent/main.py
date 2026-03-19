@@ -99,6 +99,7 @@ class AdsPowerAgent:
             asyncio.create_task(self.server.connect_websocket()),
             asyncio.create_task(self._metrics_loop()),
             asyncio.create_task(self._heartbeat_loop()),
+            asyncio.create_task(self._adspower_health_loop()),
         ]
 
         #self.tray.start()
@@ -143,7 +144,7 @@ class AdsPowerAgent:
                     )
 
             except Exception as e:
-                logger.debug(f"Error en metrics loop: {e}")
+                logger.warning(f"⚠️ Error en metrics loop: {e}")
 
             await asyncio.sleep(self.config.metrics_interval_seconds)
 
@@ -157,6 +158,49 @@ class AdsPowerAgent:
                     await self.server.ws.send(json.dumps({"type": "heartbeat"}))
                 except Exception:
                     pass
+                
+    async def _adspower_health_loop(self):
+        """Verifica cada 15s si AdsPower está corriendo y reporta al backend"""
+        was_running = True  # asumimos que arranca corriendo
+        while self.is_running:
+            await asyncio.sleep(15)
+            try:
+                is_running = await asyncio.get_event_loop().run_in_executor(
+                    None, self.adspower.ping_api
+                )
+
+                if was_running and not is_running:
+                    # AdsPower acaba de caerse
+                    logger.warning("⚠️ AdsPower dejó de responder")
+                    if self.server.ws and self.server.is_connected:
+                        import json
+                        await self.server.ws.send(json.dumps({
+                            "type":    "log",
+                            "level":   "ERROR",
+                            "message": "⚠️ AdsPower no está disponible — aplicación cerrada o bloqueada",
+                        }))
+                    # Cerrar sesiones activas
+                    for session_id in list(self.launcher.active_sessions.keys()):
+                        await self._on_browser_error(
+                            session_id,
+                            "AdsPower dejó de responder"
+                        )
+
+                elif not was_running and is_running:
+                    # AdsPower volvió
+                    logger.info("✅ AdsPower volvió a estar disponible")
+                    if self.server.ws and self.server.is_connected:
+                        import json
+                        await self.server.ws.send(json.dumps({
+                            "type":    "log",
+                            "level":   "INFO",
+                            "message": "✅ AdsPower disponible nuevamente",
+                        }))
+
+                was_running = is_running
+
+            except Exception as e:
+                logger.debug(f"Error en adspower_health_loop: {e}")
 
     def _collect_metrics(self) -> dict:
         adspower_stats = self.adspower.get_process_stats()
@@ -225,15 +269,32 @@ class AdsPowerAgent:
         )
 
     async def _on_browser_error(self, session_id: int, error: str):
-        """Error abriendo el navegador"""
+        """Error abriendo el navegador — cierra sesión en backend y limpia local"""
         logger.error(f"❌ Error en sesión {session_id}: {error}")
-        await self.server.close_session(
-            session_id=session_id,
-            data_sent_mb=0,
-            data_received_mb=0,
-            pages_visited=0,
-            crash_reason=error
-        )
+
+        # Limpiar sesión local si quedó registrada
+        if session_id in self.launcher.active_sessions:
+            session = self.launcher.active_sessions.pop(session_id)
+            session.is_running = False
+            logger.info(f"🧹 Sesión zombie limpiada: {session_id}")
+
+        # Verificar conexión antes de reportar
+        if not self.server.is_connected or not self.server.ws:
+            logger.warning(
+                f"⚠️ Sin conexión al backend — error de sesión {session_id} no reportado")
+            return
+
+        try:
+            await self.server.close_session(
+                session_id=session_id,
+                data_sent_mb=0,
+                data_received_mb=0,
+                pages_visited=0,
+                crash_reason=error
+            )
+            logger.info(f"✅ Error de sesión {session_id} reportado al backend")
+        except Exception as e:
+            logger.error(f"❌ No se pudo reportar error al backend: {e}")
 
     async def _on_update_proxy_command(self, data: dict):
         """Backend pide rotar proxy en AdsPower local."""
@@ -277,12 +338,20 @@ class AdsPowerAgent:
 
         # Reportar resultado al backend
         if self.server.ws and self.server.is_connected:
-            await self.server.ws.send(json.dumps({
-                "type":          "proxy_update_result",
-                "proxy_id":      data.get("proxy_id"),
-                "success_count": success_count,
-                "failed_count":  failed_count,
-            }))
+            try:
+                await self.server.ws.send(json.dumps({
+                    "type":          "proxy_update_result",
+                    "proxy_id":      data.get("proxy_id"),
+                    "success_count": success_count,
+                    "failed_count":  failed_count,
+                }))
+                logger.info(f"✅ Resultado proxy_update enviado al backend")
+            except Exception as e:
+                logger.error(
+                    f"❌ No se pudo reportar resultado de proxy al backend: {e}")
+        else:
+            logger.warning(
+                f"⚠️ Sin conexión — resultado proxy_update no enviado")
 
         logger.info(f"✅ update_proxy completado: {success_count} ok, {failed_count} fallidos")
         
@@ -304,20 +373,26 @@ class AdsPowerAgent:
                 "success":     adspower_id is not None,
             }))
 
-
     def _setup_remote_logging(self):
         server_ref = self.server
 
         async def remote_sink(message):
             record = message.record
-            if server_ref.is_connected:
+            if not server_ref.is_connected or not server_ref.ws:
+                return
+            try:
                 await server_ref.send_log(
                     level=record["level"].name,
-                    message=record["message"],
+                    message=(
+                        f"[{record['name']}:{record['function']}:{record['line']}] "
+                        f"{record['message']}"
+                    ),
                 )
+            except Exception:
+                pass  # No loguear errores del logger — evita loop infinito
 
-        logger.add(remote_sink, level="WARNING") 
-    
+        logger.add(remote_sink, level="WARNING")
+
 
     async def _on_check_proxy_command(self, data: dict):
         """Hace ping al proxy DESDE esta máquina y reporta latencia al backend."""
