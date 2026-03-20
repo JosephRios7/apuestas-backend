@@ -576,3 +576,32 @@ async def get_sessions_by_profile(
             for s in sessions
         ]
     }
+    
+
+@router.post("/sessions/cleanup-stale")
+async def cleanup_stale_sessions(db: AsyncSession = Depends(get_db)):
+    """Cierra todas las sesiones activas/opening que no tienen actividad reciente"""
+    from app.models.agent_session import AgentSession, SessionStatus
+    from sqlalchemy import select, update
+    from datetime import datetime, timedelta
+
+    # Cerrar sesiones en estado active u opening con más de 10 minutos sin actividad
+    cutoff = datetime.utcnow() - timedelta(minutes=10)
+
+    result = await db.execute(
+        select(AgentSession).where(
+            AgentSession.status.in_(
+                [SessionStatus.ACTIVE, SessionStatus.OPENING])
+        )
+    )
+    stale = result.scalars().all()
+
+    closed = 0
+    for sess in stale:
+        sess.status = SessionStatus.CLOSED
+        sess.closed_at = datetime.utcnow()
+        closed += 1
+
+    await db.commit()
+
+    return {"closed": closed, "message": f"{closed} sesiones zombie cerradas"}

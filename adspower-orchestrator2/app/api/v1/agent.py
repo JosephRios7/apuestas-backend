@@ -226,6 +226,15 @@ async def agent_websocket(websocket: WebSocket, computer_id: int, db: AsyncSessi
                 message = data.get("message", "")
                 await connection_manager.add_agent_log(computer_id, level, message)
 
+            elif msg_type == "adspower_status":
+                await connection_manager.broadcast_to_admins({
+                    "type":        "adspower_status",
+                    "status":      data.get("status"),
+                    "computer_id": computer_id,
+                    "message":     data.get("message"),
+                    "timestamp":   datetime.utcnow().isoformat(),
+                })
+            
             elif msg_type == "proxy_check_result":
                 request_id = data.get("request_id")
                 if request_id:
@@ -306,6 +315,9 @@ async def _process_pending_profiles(computer_id: int):
 
            
             # # # # #REVISAR LENGUAJE 
+            def _clamp_val(value, valid_list):
+                return min(valid_list, key=lambda x: abs(x - (value or valid_list[0])))
+
             fingerprint_config = {
                 "ua":                  profile.user_agent or "",
                 "os":                  profile.os or "Windows",
@@ -313,8 +325,8 @@ async def _process_pending_profiles(computer_id: int):
                 "resolution":          profile.screen_resolution or "1920x1080",
                 "device_name":         profile.device_name or "",
                 "platform":            profile.platform or "Win32",
-                "hardware_concurrency": profile.hardware_concurrency or 4,
-                "device_memory":       profile.device_memory or 8,
+                "hardware_concurrency": _clamp_val(profile.hardware_concurrency, [2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 32, 64]),
+                "device_memory":       _clamp_val(profile.device_memory, [2, 4, 6, 8, 16, 32, 64, 128]),
             }
 
             # Construir proxy config desde la relación

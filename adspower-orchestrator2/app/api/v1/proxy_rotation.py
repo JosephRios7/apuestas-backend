@@ -1,5 +1,6 @@
 # app/api/v1/proxy_rotation.py - ✅ VERSIÓN CORREGIDA SIN BACKGROUNDTASKS
 
+import re
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
@@ -51,15 +52,35 @@ async def check_and_rotate_proxy(
 
 @router.post("/check-and-rotate-all")
 async def check_and_rotate_all():
+    asyncio.create_task(_queued_check_all())
+    return {"message": "Verificación encolada — se ejecutará cuando haya un agente disponible", "status": "queued"}
+
+
+async def _queued_check_all():
+    """Espera hasta que haya un agente online y luego ejecuta la rotación"""
     from app.core.connection_manager import connection_manager
-    online_agents = connection_manager.get_online_agents()
-    if not online_agents:
-        raise HTTPException(
-            status_code=503,
-            detail="No hay agentes online. Conecta al menos un agente antes de rotar proxies."
-        )
-    asyncio.create_task(_background_check_all())
-    return {"message": "Verificación iniciada en background", "status": "processing"}
+    max_wait_seconds = 300  # máximo 5 minutos esperando
+    waited = 0
+
+    while waited < max_wait_seconds:
+        online_agents = connection_manager.get_online_agents()
+        if online_agents:
+            logger.info(f"✅ Agente disponible — iniciando rotación de proxies")
+            await _background_check_all()
+            return
+        logger.info(
+            f"⏳ Esperando agente online... ({waited}s / {max_wait_seconds}s)")
+        await asyncio.sleep(10)
+        waited += 10
+
+    logger.warning(
+        "⚠️ Timeout esperando agente — rotación cancelada después de 5 minutos")
+    await connection_manager.broadcast_to_admins({
+        "type":    "system_event",
+        "event":   "proxy_rotation_timeout",
+        "message": "Rotación cancelada — no hubo agente disponible en 5 minutos",
+        "source":  "proxy_rotation",
+    })
 
 
 async def _background_check_all():
@@ -152,15 +173,24 @@ async def _background_check_all():
                 soax_result = await get_soax_username_with_dynamic_city(
                     base_username=settings.SOAX_USERNAME,
                     country=(proxy.country or "ec").lower(),
-                    preferred_city=(proxy.city or "").lower() or None,
+                    preferred_city=None,  # ← no preferir la ciudad actual, buscar una diferente
                     exclude_cities=[proxy.city.lower()] if proxy.city else [],
                     session_lifetime=3600
                 )
-                new_user = soax_result["username"]
+                new_user = soax_result.get("username")
+                if not new_user:
+                    raise ValueError(
+                        f"SOAX no devolvió username válido para proxy {proxy.id}")
+                city = soax_result.get("selected_city") or "unknown"
+                # No usar proxy.city como fallback — si SOAX falló, la ciudad es desconocida
+                
                 city = soax_result.get(
                     "selected_city") or proxy.city or "unknown"
-                session_id = soax_result.get("username", "").split(
-                    "sessionid-")[-1].split("-")[0] or secrets.token_urlsafe(8)  # ← AGREGAR
+
+                raw = soax_result.get("username", "")
+                # Extraer todo entre "sessionid-" y "-sessionlength" o fin de string
+                match = re.search(r'sessionid-(.+?)(?:-sessionlength|$)', raw)
+                session_id = match.group(1) if match else secrets.token_urlsafe(8)
 
                 logger.info(
                     f"🔄 Proxy {proxy.id} rotando a ciudad: {city} "
@@ -208,7 +238,8 @@ async def _background_check_all():
 
                     await db.commit()
                     stats["rotated"] += 1
-                    logger.info(f"Proxy {proxy.id} rotado → {new_user[:40]}...")
+                    logger.info(
+                        f"Proxy {proxy.id} rotado → ciudad: {city} (session: {session_id[:6]}...)")
                     await connection_manager.broadcast_to_admins({
                         "type":     "rotation_progress",
                         "proxy_id": proxy.id,

@@ -270,7 +270,20 @@ class AdsPowerAgent:
 
     async def _on_browser_error(self, session_id: int, error: str):
         """Error abriendo el navegador — cierra sesión en backend y limpia local"""
-        logger.error(f"❌ Error en sesión {session_id}: {error}")
+        # Clasificar el error para mejor visibilidad
+        if "ADSPOWER_OFFLINE" in error or "AdsPower no disponible" in error:
+            logger.error(f"❌ Sesión {session_id} — AdsPower no está abierto")
+        elif "PROXY_INVALID" in error or "Proxy inválido" in error:
+            logger.error(
+                f"❌ Sesión {session_id} — Proxy caído o inválido, necesita rotación")
+        elif "TIMEOUT" in error or "Timeout" in error:
+            logger.error(
+                f"❌ Sesión {session_id} — Timeout: navegador tardó demasiado")
+        elif "not exist" in error.lower():
+            logger.error(
+                f"❌ Sesión {session_id} — Perfil no existe en AdsPower")
+        else:
+            logger.error(f"❌ Error en sesión {session_id}: {error}")
 
         # Limpiar sesión local si quedó registrada
         if session_id in self.launcher.active_sessions:

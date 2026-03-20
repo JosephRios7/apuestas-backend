@@ -203,14 +203,34 @@ class AdsPowerMonitor:
 
             error_msg = data.get("msg", "Error desconocido")
             logger.error(f"❌ AdsPower rechazó abrir el navegador: {error_msg}")
-            return {"success": False, "error": error_msg}
+
+            # Clasificar el error
+            error_type = "UNKNOWN"
+            if "proxy" in error_msg.lower() or "Check Proxy" in error_msg:
+                error_type = "PROXY_INVALID"
+                error_msg = f"Proxy inválido o caído — {error_msg}"
+            elif "not exist" in error_msg.lower():
+                error_type = "PROFILE_NOT_FOUND"
+                error_msg = f"Perfil no existe en AdsPower — {error_msg}"
+
+            return {"success": False, "error": error_msg, "error_type": error_type}
 
         except httpx.ConnectError:
-            return {"success": False, "error": "AdsPower no responde — aplicación cerrada o bloqueada"}
+            return {
+                "success": False,
+                "error": "AdsPower no disponible",
+                "error_type": "ADSPOWER_OFFLINE",
+                "detail": "La aplicación AdsPower no está abierta o no responde"
+            }
         except httpx.TimeoutException:
-            return {"success": False, "error": "Timeout abriendo navegador — AdsPower tardó más de 30s"}
+            return {
+                "success": False,
+                "error": "Timeout al abrir navegador",
+                "error_type": "TIMEOUT",
+                "detail": "AdsPower tardó más de 30s en responder"
+            }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "error_type": "UNKNOWN"}
         
     def close_browser(self, profile_id: str) -> bool:
         try:

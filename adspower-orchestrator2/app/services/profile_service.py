@@ -24,6 +24,11 @@ def _clamp_hardware_concurrency(value: int) -> int:
     return min(valid, key=lambda x: abs(x - value))
 
 
+def _clamp_device_memory(value: int) -> int:
+    """AdsPower solo acepta valores específicos para device_memory"""
+    valid = [2, 4, 6, 8, 16, 32, 64, 128]
+    return min(valid, key=lambda x: abs(x - value))
+
 class ProfileService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -70,7 +75,7 @@ class ProfileService:
             "audio": "1",
             "do_not_track": "default",
             "hardware_concurrency": str(_clamp_hardware_concurrency(profile_config["hardware_concurrency"])),
-            "device_memory": str(profile_config["device_memory"]),
+            "device_memory": str(_clamp_device_memory(profile_config["device_memory"])),
             "flash": "block",
             "media_devices": "1",
             "client_rects": "1",
